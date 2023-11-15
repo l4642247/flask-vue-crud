@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, make_response
+from flask import Flask, json, jsonify, request, make_response
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 import uuid
@@ -13,11 +13,16 @@ app = Flask(__name__)
 # enable CORS
 CORS(app, resources={r'/*': {'origins': '*'}})
 
-# creates SQLALCHEMY object
-app.config['SECRET_KEY'] = 'abc'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///db.sqlite3'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
+# 设置数据库连接地址
+DB_URI = 'mysql+pymysql://root:123456@127.0.0.1:3306/testdb'
+app.config['SQLALCHEMY_DATABASE_URI'] = DB_URI
+# 是否追踪数据库修改，一般不开启, 会影响性能
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# 是否显示底层执行的SQL语句
+app.config['SQLALCHEMY_ECHO'] = True
 db = SQLAlchemy(app)
+
+app.config['SECRET_KEY'] = 'nicecoder'
 
 # Database ORMs☾
 class User(db.Model):
@@ -38,10 +43,9 @@ def token_required(f):
         # return 401 if token is not passed
         if not token:
             return jsonify({'message' : 'Token is missing !!'}), 401
-  
         try:
             # decoding the payload to fetch the stored details
-            data = jwt.decode(token, app.config['SECRET_KEY'])
+            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
             current_user = User.query\
                 .filter_by(public_id = data['public_id'])\
                 .first()
@@ -74,8 +78,9 @@ BOOKS = [
 
 # sanity check route
 @app.route('/ping', methods=['GET'])
-def ping_pong():
-    return jsonify('pong!')
+@token_required
+def ping_pong(current_user):
+    return json.dump(current_user)
 
 # route for logging user in
 @app.route('/login', methods =['POST'])
@@ -104,13 +109,20 @@ def login():
         )
   
     if check_password_hash(user.password, auth.get('password')):
-        # generates the JWT Token
+        # 构造头部
+        header = {
+            'alg': 'HS256',  # 使用 HMAC SHA-256 算法进行签名
+            'typ': 'JWT'
+        }
+        
+        # 生成JWT
         token = jwt.encode({
             'public_id': user.public_id,
-            'exp' : datetime.utcnow() + timedelta(minutes = 30)
-        }, app.config['SECRET_KEY'])
-  
-        return make_response(jsonify({'token' : token.decode('UTF-8')}), 201)
+            'exp' : datetime.utcnow() + timedelta(hours=1)
+        }, app.config['SECRET_KEY'], algorithm='HS256', headers=header)
+
+        return make_response(jsonify({'token' : token}), 201)
+
     # returns 403 if password is wrong
     return make_response(
         'Could not verify',
@@ -154,7 +166,7 @@ def signup():
 # book
 @app.route('/books', methods=['GET', 'POST'])
 @token_required
-def all_books():
+def all_books(current_user):
     response_object = {'status': 'success'}
     if request.method == 'POST':
         post_data = request.get_json()
